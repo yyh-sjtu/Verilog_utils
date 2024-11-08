@@ -158,6 +158,118 @@ def read_verilog_from_dir(dir_path, filter_out_tb=True):
     file_path = search_files_recursively(dir_path, '.v')
     if filter_out_tb:
         file_path = filter_out_tb_files(file_path)
+# def extract_always_block(text):
+#     # pattern = r'always\s*\(.*\)\s*begin\s*.*\s*end'
+#     # pattern = r'always\s*@\s*\([^\(\)]*\)\s*begin(?:[^b]|b(?!egin))*?end'
+#     # pattern = r'always\s*@\([^)]*\)\s*begin([\s\S]*?)end'
+#     # pattern = r'always\s*@\([^)]*\)\s*begin[\s\S]*?end'
+#     pattern = r'always\s*@\([^)]*\)\s*begin(?:[^b]*?(?!begin|end)[\s\S]*?|\s*begin[\s\S]*?end\s*)*end'
+#     always_block_extracted = re.findall(pattern, text, re.DOTALL)
+#     return always_block_extracted
+
+def extract_always_block(verilog_code):
+    def find_matching_end(code, start):
+        begin_count = 1
+        pos = start
+        while pos < len(code):
+            if re.match(r'\bbegin\b', code[pos:]):
+                begin_count += 1
+                pos += 5  # 移过 'begin'
+            elif re.match(r'\bend\b', code[pos:]):
+                begin_count -= 1
+                pos += 3  # 移过 'end'
+                if begin_count == 0:
+                    return pos
+            else:
+                pos += 1
+        return None
+
+    pattern = r'always\s*@\s*\([^)]*\)\s*begin'
+    matches = []
+    pos = 0
+
+    while True:
+        match = re.search(pattern, verilog_code[pos:])
+        if not match:
+            break
+
+        start = pos + match.start()
+        end = find_matching_end(verilog_code, start + match.end() - match.start())
+        if end:
+            matches.append(verilog_code[start:end + 1])
+            pos = end + 1
+        else:
+            pos += match.end()
+
+    return matches
+
+def extract_always_trigger(text):
+    pattern = r'always\s*@\s*\(([^)]*)\)'  # 匹配 always @(...) 中的括号内容
+    conditions = re.findall(pattern, text)
+    return conditions
+    
+def gen_clk_dict_from_module_instance_dict(module_dict, instance_dict) -> dict:
+
+    def get_clk_from_always_block(text):
+        trigger_list = extract_always_trigger(text)
+        clk_candidate = set()
+        for trigger in trigger_list:
+            if '*' in trigger_list: continue
+            elif not('posedge' in trigger or 'negedge' in trigger): continue
+            trigger_var_list = re.split(r'[\(\)\n\;\, ]+|or', trigger.replace('posedge', '').replace('negedge', ''))
+            trigger_var_list = [x.strip() for x in trigger_var_list if x]
+            for trigger_var in trigger_var_list:
+                clk_candidate.add(trigger_var)
+                
+        always_block_list = extract_always_block(text)
+        for always_block in always_block_list:
+            code_without_always = re.sub(r'always\s*@\s*\(([^)]*)\)', '', always_block, flags=re.DOTALL)
+            if 'always' in code_without_always:
+                print('error, erasing always fails')
+            split_text = re.split(r'[\(\)\n\;\, ]+', code_without_always)
+            split_text = [s for s in split_text if s]
+
+            for var in split_text:
+                if var in clk_candidate:
+                    clk_candidate.discard(var)
+        
+        candidate_list = list(clk_candidate)
+        if len(clk_candidate) > 1:
+            for item in candidate_list:
+                if not('clk' in item.lower() or 'clock' in item.lower()):
+                    clk_candidate.discard(item)
+        
+        if len(clk_candidate) == 0:
+            return "None"
+                    
+        return list(clk_candidate)[0]
+    
+    def get_clk_dict_from_instance_dict():
+        pass
+        
+    clk_dict = {}
+    for module_name in module_dict:
+        clk_dict[module_name] = get_clk_from_always_block(module_dict[module_name])
+        
+    return clk_dict
+
+def gen_instantialization_table_from_module_dict(module_dict) -> list:
+    instant_dict = {module_name: [] for module_name in module_dict}
+    for module_name in module_dict:
+        state_list = module_dict[module_name].split(';')
+        state_first_word_list = [state.strip().split(' ')[0] for state in state_list]
+        for word in state_first_word_list:
+            if word in module_dict:
+                instant_dict[module_name].append(word)
+        
+        state_list = module_dict[module_name].split('\n')
+        state_first_word_list = [state.strip().split(' ')[0] for state in state_list]
+        for word in state_first_word_list:
+            if word in module_dict:
+                instant_dict[module_name].append(word)
+    return instant_dict
+
+gen_ins_table_from_module_dict = gen_instantialization_table_from_module_dict
         
 class Verilog_Processor:
     def __init__(self, design_dir=None, filter_out_tb=True, log_file='Verilog_Processor.log'):
@@ -167,7 +279,13 @@ class Verilog_Processor:
             self.file_list = filter_out_tb_files(self.file_list)
         self.verilog_code = verilog_extractor_from_file_list(self.file_list)
         self.module_dict = module_dict_extractor(self.verilog_code)
+        self.instance_dict = gen_ins_table_from_module_dict(self.module_dict)
+        self.clk_dict = gen_clk_dict_from_module_instance_dict(self.module_dict, self.instance_dict)
+
         self.top_module_candidates, self.top_module_clk = find_top_module_and_clk_from_module_dict(self.module_dict)
+        
+        
+        
         self.log(log_file)
         
     def log(self, log_path):
@@ -180,3 +298,15 @@ class Verilog_Processor:
 if __name__ == '__main__':
     verilog_obj = Verilog_Processor('all_filtered_design/riscv-src')
     print(verilog_obj.top_module_candidates, verilog_obj.top_module_clk)
+    print(verilog_obj.clk_dict)
+    
+# if __name__ == '__main__':
+#     with open('all_filtered_design/ARBITER/homework.v', 'r') as f:
+#         text = f.read()
+#     print(text)
+#     print(text.count('always'))
+#     always_list = extract_always_trigger(text)
+#     print(len(always_list))
+#     for always in always_list:
+#         print(always)
+#         print("-----------------")
