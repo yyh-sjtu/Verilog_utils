@@ -120,10 +120,11 @@ def get_header_var_list(header):
     input_list = re.findall(pattern, header, re.DOTALL)[0]
     input_list = input_list.split(',')
     # input_list = [x.strip() for x in input_list]
-    input_list = [x.strip() for x in input_list]
+    input_list = [x.strip().strip('\t') for x in input_list]
     var_list = []
     for var in input_list:
-        if not ']' in var: var_list.append(var.split(' ')[-1])
+        # trigger_var_list = re.split(r'[\(\)\n\;\, ]+|or', trigger.replace('posedge', '').replace('negedge', ''))
+        if not ']' in var: var_list.append(re.split(r'[\t ]+', var)[-1])
         else: var_list.append(var.split(']')[-1].strip(' ').strip('\t'))
     return var_list
 
@@ -158,14 +159,6 @@ def read_verilog_from_dir(dir_path, filter_out_tb=True):
     file_path = search_files_recursively(dir_path, '.v')
     if filter_out_tb:
         file_path = filter_out_tb_files(file_path)
-# def extract_always_block(text):
-#     # pattern = r'always\s*\(.*\)\s*begin\s*.*\s*end'
-#     # pattern = r'always\s*@\s*\([^\(\)]*\)\s*begin(?:[^b]|b(?!egin))*?end'
-#     # pattern = r'always\s*@\([^)]*\)\s*begin([\s\S]*?)end'
-#     # pattern = r'always\s*@\([^)]*\)\s*begin[\s\S]*?end'
-#     pattern = r'always\s*@\([^)]*\)\s*begin(?:[^b]*?(?!begin|end)[\s\S]*?|\s*begin[\s\S]*?end\s*)*end'
-#     always_block_extracted = re.findall(pattern, text, re.DOTALL)
-#     return always_block_extracted
 
 def extract_always_block(verilog_code):
     def find_matching_end(code, start):
@@ -238,11 +231,8 @@ def gen_clk_dict_from_module_instance_dict(module_dict, instance_dict) -> dict:
             for item in candidate_list:
                 if not('clk' in item.lower() or 'clock' in item.lower()):
                     clk_candidate.discard(item)
-        
-        if len(clk_candidate) == 0:
-            return "None"
                     
-        return list(clk_candidate)[0]
+        return list(clk_candidate)
     
     def get_clk_dict_from_instance_dict():
         pass
@@ -253,23 +243,79 @@ def gen_clk_dict_from_module_instance_dict(module_dict, instance_dict) -> dict:
         
     return clk_dict
 
-def gen_instantialization_table_from_module_dict(module_dict) -> list:
-    instant_dict = {module_name: [] for module_name in module_dict}
-    for module_name in module_dict:
-        state_list = module_dict[module_name].split(';')
-        state_first_word_list = [state.strip().split(' ')[0] for state in state_list]
-        for word in state_first_word_list:
-            if word in module_dict:
-                instant_dict[module_name].append(word)
+def get_instances(text):
+    statements = remove_comments(text).split(';')
+    statements = [statement.strip().strip('\t') for statement in statements]
+    regulated_statements = []
+    for statement in statements:
+        words = re.split(r'[\s\t\n]+', statement)
+        if 'module' in words or 'end' in words: continue
+        regulated_statements.append(statement)
+    statements = regulated_statements
+    pattern = r'[^\)\(\s]+\s*(?:#\s*\(.*?\))?\s*[^\)\(\s]+\s*\(.*?\)'
+    # instances = [statement for statement in statements if re.fullmatch(pattern, statement,  re.DOTALL) is not None]
+    instances = [statement for statement in statements if re.fullmatch(pattern, statement,  re.DOTALL) is not None]
+    return instances
+
+def parse_instance(instance):
+    def var_extractor(text):
         
-        state_list = module_dict[module_name].split('\n')
-        state_first_word_list = [state.strip().split(' ')[0] for state in state_list]
-        for word in state_first_word_list:
-            if word in module_dict:
-                instant_dict[module_name].append(word)
+        vars = re.search(r'[^\)\(\s]+\s*(?:#\s*\(.*?\))?\s*[^\)\(\s]+\s*\((.*)\)', text, re.DOTALL).group(1).split(',')
+        vars = [var.strip().strip('\t') for var in vars]
+        return vars
+    module_instanted = instance.split(' ')[0]
+    var_list = var_extractor(instance)
+    # print(var_list)
+    return module_instanted, var_list
+
+def gen_instantialization_table_from_module_dict(module_dict) -> dict:
+    """
+    format of instant_dict:
+    {
+        "module_instant_others": {"module_instanted": {"clk": "clk", "a_instanted": "a_instant_others"}}
+    }
+    """
+
+    port_dict = module_port_dict(module_dict)
+    
+    def match_io(module_instanted, var_list):
+        match_io_dict = {}
+        if len(var_list) == 0: return {}
+        if '.' in var_list[0]:  # .a(b) pattern 
+            pattern = r'\.(.+)\((.+)\)'
+            for item in var_list:
+                match = re.match(pattern, item)
+                if match:
+                    key, value = match.groups()
+                    match_io_dict[key] = value
+        else:
+            port_list = port_dict[module_instanted]
+            for i in range(len(port_list)):
+                match_io_dict[port_list[i]] = var_list[i]
+        return match_io_dict
+    
+    
+    instant_dict = {}
+    for module_name in module_dict:
+        instances = get_instances(module_dict[module_name])
+        instanted_dict = {}
+        for instance in instances:
+            module_instanted, var_list = parse_instance(instance)
+            instanted_dict[module_instanted] = match_io(module_instanted, var_list)
+            
+        instant_dict[module_name] = instanted_dict
+    
     return instant_dict
+        
 
 gen_ins_table_from_module_dict = gen_instantialization_table_from_module_dict
+
+def module_port_dict(module_dict):
+    port_dict = {}
+    for module_name in module_dict:
+        var_list = get_header_var_list(get_module_header(module_dict[module_name]))
+        port_dict[module_name] = var_list
+    return port_dict
         
 class Verilog_Processor:
     def __init__(self, design_dir=None, filter_out_tb=True, log_file='Verilog_Processor.log'):
@@ -279,6 +325,7 @@ class Verilog_Processor:
             self.file_list = filter_out_tb_files(self.file_list)
         self.verilog_code = verilog_extractor_from_file_list(self.file_list)
         self.module_dict = module_dict_extractor(self.verilog_code)
+        self.module_port_dict = module_port_dict(self.module_dict)
         self.instance_dict = gen_ins_table_from_module_dict(self.module_dict)
         self.clk_dict = gen_clk_dict_from_module_instance_dict(self.module_dict, self.instance_dict)
 
@@ -297,8 +344,10 @@ class Verilog_Processor:
         
 if __name__ == '__main__':
     verilog_obj = Verilog_Processor('all_filtered_design/riscv-src')
-    print(verilog_obj.top_module_candidates, verilog_obj.top_module_clk)
-    print(verilog_obj.clk_dict)
+    # print(verilog_obj.top_module_candidates, verilog_obj.top_module_clk)
+    # print(verilog_obj.clk_dict)
+    # print(verilog_obj.module_port_dict)
+    print(verilog_obj.instance_dict)
     
 # if __name__ == '__main__':
 #     with open('all_filtered_design/ARBITER/homework.v', 'r') as f:
