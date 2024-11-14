@@ -8,6 +8,10 @@ from glob import glob
 import os
 import json
 
+def read_file(file_path):
+    with open(file_path, 'r', encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
 def remove_comments(text):
     text = re.sub(r'//.*', '', text)
     text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
@@ -108,8 +112,12 @@ def find_top_module_from_verilog(text):
 
 def get_module_header(text):
     pattern = r'module\s+[^\(\s]+\s*(?:#\s*\(.*?\))?\s*\(.*?\)\s*;'
-    verilog_code = re.findall(pattern, text, re.DOTALL)[0]
+    verilog_code = re.findall(pattern, text, re.DOTALL)
+    if len(verilog_code) == 0:
+        raise ValueError("No module found in the given text.")
+    verilog_code = verilog_code[0]
     return verilog_code
+
 def get_module_name_from_header(header):
     pattern = r'module\s+([^\(\s]+)'
     module_name = re.findall(pattern, header, re.DOTALL)[0]
